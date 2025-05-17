@@ -33,10 +33,20 @@ const supabaseUrl = 'https://wilmzlaieqfmhlnzrgiz.supabase.co'
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndpbG16bGFpZXFmbWhsbnpyZ2l6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDQwNTgwNjksImV4cCI6MjA1OTYzNDA2OX0.qDya2K_qa_k7XXoa6ey_0X1bqxOyT6pEbndtpOTFYT4'
 
 // Create a single supabase client for interacting with your database
-const supabase = createClient(supabaseUrl, supabaseAnonKey)
+const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    storageKey: 'zapateria_auth_token',
+    // Extender tiempo de la sesión (7 días en segundos)
+    detectSessionInUrl: false,
+  }
+})
 
 // Clave para almacenar la sesión en localStorage
 const LOCAL_STORAGE_KEY = 'zapateria_user_session'
+// Tiempo de expiración de la sesión en localStorage (7 días en milisegundos)
+const SESSION_EXPIRY = 7 * 24 * 60 * 60 * 1000
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Trabajador | null>(null)
@@ -45,15 +55,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Función para guardar el usuario en localStorage
   const saveUserToLocalStorage = (userData: Trabajador) => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(userData))
+      const sessionData = {
+        user: userData,
+        expiry: Date.now() + SESSION_EXPIRY // 7 días desde ahora
+      }
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(sessionData))
     }
   }
 
   // Función para obtener el usuario de localStorage
   const getUserFromLocalStorage = (): Trabajador | null => {
     if (typeof window !== 'undefined') {
-      const savedUser = localStorage.getItem(LOCAL_STORAGE_KEY)
-      return savedUser ? JSON.parse(savedUser) : null
+      const savedSession = localStorage.getItem(LOCAL_STORAGE_KEY)
+      if (savedSession) {
+        const sessionData = JSON.parse(savedSession)
+        
+        // Renovar la fecha de expiración cada vez que se consulta
+        if (sessionData.user) {
+          saveUserToLocalStorage(sessionData.user)
+          return sessionData.user
+        }
+      }
     }
     return null
   }
@@ -79,8 +101,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       // Esta parte sigue siendo útil para el signOut estándar de Supabase
       if (!session) {
-        setUser(null)
-        removeUserFromLocalStorage()
+        // Solo eliminar la sesión si se llamó a signOut explícitamente
+        if (event === 'SIGNED_OUT') {
+          setUser(null)
+          removeUserFromLocalStorage()
+        }
       }
       
       if (!savedUser) {
@@ -88,8 +113,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     })
 
+    // Configurar intervalo para renovar la sesión
+    const refreshInterval = setInterval(() => {
+      const currentUser = getUserFromLocalStorage()
+      if (currentUser) {
+        saveUserToLocalStorage(currentUser) // Renovar tiempo de expiración
+      }
+    }, 3600000) // Cada hora
+
     return () => {
       authSubscription?.unsubscribe()
+      clearInterval(refreshInterval)
     }
   }, [])
 
